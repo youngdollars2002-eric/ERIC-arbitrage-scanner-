@@ -1,0 +1,230 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERIC Crypto Arbitrage Scanner</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d18;color:#eef3ff;font-family:Arial,sans-serif}
+header{padding:22px 16px;background:#111a2b;border-bottom:1px solid #26334b}
+h1{margin:0;color:#39e6b0;font-size:27px}
+header p{color:#9baac3;margin:7px 0 0;font-size:13px}
+main{max-width:1000px;margin:auto;padding:16px}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.card,.panel{background:#111a2b;border:1px solid #26334b;border-radius:12px;padding:15px;margin-bottom:13px}
+.card small{color:#9baac3}
+.card h2{margin:9px 0 0;font-size:22px;color:#39e6b0}
+button,select,input{background:#1b2940;color:white;border:1px solid #344665;padding:11px;border-radius:8px}
+button{background:#12b886;color:#07130f;font-weight:bold;cursor:pointer}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin:15px 0}
+input{width:100px}
+.status{color:#9baac3;font-size:12px;margin:10px 0}
+table{width:100%;border-collapse:collapse;min-width:650px}
+th,td{text-align:left;padding:12px 9px;border-bottom:1px solid #26334b;font-size:13px}
+th{color:#9baac3}
+.green{color:#39e6b0}
+.red{color:#ff6b78}
+.tablewrap{overflow-x:auto}
+.note{color:#9baac3;font-size:12px;line-height:1.6}
+footer{text-align:center;color:#70809b;padding:20px;font-size:12px}
+@media(max-width:500px){.cards{grid-template-columns:1fr 1fr}.card h2{font-size:18px}}
+</style>
+</head>
+<body>
+<header>
+<h1>ERIC <span style="color:white">SCANNER</span></h1>
+<p>Crypto Cross-Exchange Arbitrage Monitor</p>
+</header>
+
+<main>
+<div class="cards">
+<div class="card"><small>Markets scanned</small><h2 id="markets">0</h2></div>
+<div class="card"><small>Opportunities</small><h2 id="opportunities">0</h2></div>
+<div class="card"><small>Best net spread</small><h2 id="best">0.00%</h2></div>
+</div>
+
+<div class="panel">
+<strong>Scanner settings</strong>
+<div class="controls">
+<label>Minimum net spread %<br><input id="threshold" type="number" value="2" step="0.1"></label>
+<label>Fee per side %<br><input id="fee" type="number" value="0.1" step="0.01"></label>
+<label>Slippage per side %<br><input id="slippage" type="number" value="0.15" step="0.01"></label>
+</div>
+<div class="controls">
+<button onclick="scan()">SCAN NOW</button>
+<button onclick="toggleScan()" id="toggle">PAUSE</button>
+<select id="interval" onchange="changeInterval()">
+<option value="15000">Refresh: 15 sec</option>
+<option value="30000">Refresh: 30 sec</option>
+<option value="60000">Refresh: 60 sec</option>
+</select>
+</div>
+<div class="status" id="status">Connecting to exchanges...</div>
+</div>
+
+<div class="panel">
+<strong>Best opportunity</strong>
+<p id="bestOpportunity" class="green">Waiting for market data...</p>
+<p class="note">Buy at the exchange with the lower ask price and sell at the exchange with the higher bid price. Estimated net spread subtracts your configured trading fees and slippage assumptions.</p>
+</div>
+
+<div class="panel">
+<strong>Arbitrage opportunities</strong>
+<div class="tablewrap">
+<table>
+<thead>
+<tr><th>Coin</th><th>Buy exchange</th><th>Buy ask</th><th>Sell exchange</th><th>Sell bid</th><th>Net spread</th></tr>
+</thead>
+<tbody id="results">
+<tr><td colspan="6">Waiting for data...</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="panel">
+<strong>Exchange connections</strong>
+<p id="binance">Binance: Waiting...</p>
+<p id="bybit">Bybit: Waiting...</p>
+<p id="okx">OKX: Waiting...</p>
+</div>
+
+<div class="panel">
+<strong>Important risk warning</strong>
+<p class="note">This is a market-monitoring tool, not an execution engine. Prices can change before you trade. It does not verify token contract addresses, deposit and withdrawal availability, network compatibility, order-book depth or actual transfer costs. The estimated spread is not guaranteed profit. Verify every opportunity manually before trading.</p>
+</div>
+</main>
+<footer>ERIC SCANNER · Version 1.0 · Alert-only</footer>
+
+<script>
+let timer=null;
+let running=true;
+let latest=[];
+
+async function getJSON(url){
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),10000);
+ try{
+  const response=await fetch(url,{signal:controller.signal});
+  if(!response.ok)throw new Error("HTTP "+response.status);
+  return await response.json();
+ }finally{clearTimeout(timeout);}
+}
+
+async function scan(){
+ document.getElementById("status").textContent="Scanning exchanges...";
+ const states={binance:false,bybit:false,okx:false};
+ const markets=new Map();
+
+ function save(exchange,symbol,bid,ask){
+  if(!symbol.endsWith("USDT")||!(bid>0)||!(ask>0))return;
+  const coin=symbol.slice(0,-4);
+  if(!markets.has(coin))markets.set(coin,{});
+  markets.get(coin)[exchange]={bid,ask};
+ }
+
+ const tasks=[
+  (async()=>{
+   const d=await getJSON("https://api.binance.com/api/v3/ticker/bookTicker");
+   d.forEach(x=>save("Binance",x.symbol,+x.bidPrice,+x.askPrice));
+   states.binance=true;
+  })(),
+  (async()=>{
+   const d=await getJSON("https://api.bybit.com/v5/market/tickers?category=spot");
+   if(d.retCode!==0)throw Error("Bybit error");
+   d.result.list.forEach(x=>save("Bybit",x.symbol,+x.bid1Price,+x.ask1Price));
+   states.bybit=true;
+  })(),
+  (async()=>{
+   const d=await getJSON("https://www.okx.com/api/v5/market/tickers?instType=SPOT");
+   if(d.code!=="0")throw Error("OKX error");
+   d.data.forEach(x=>{
+    if(x.instId.endsWith("-USDT"))
+     save("OKX",x.instId.replace("-",""),+x.bidPx,+x.askPx);
+   });
+   states.okx=true;
+  })()
+ ];
+
+ await Promise.allSettled(tasks);
+
+ document.getElementById("binance").textContent="Binance: "+(states.binance?"Connected":"Unavailable");
+ document.getElementById("bybit").textContent="Bybit: "+(states.bybit?"Connected":"Unavailable");
+ document.getElementById("okx").textContent="OKX: "+(states.okx?"Connected":"Unavailable");
+
+ const fee=Math.max(0,+document.getElementById("fee").value||0);
+ const slip=Math.max(0,+document.getElementById("slippage").value||0);
+ const threshold=+document.getElementById("threshold").value||0;
+ const rows=[];
+
+ for(const [coin,exchanges] of markets){
+  const names=Object.keys(exchanges);
+  if(names.length<2)continue;
+
+  for(const buyName of names){
+   for(const sellName of names){
+    if(buyName===sellName)continue;
+    const buy=exchanges[buyName].ask;
+    const sell=exchanges[sellName].bid;
+    if(!(buy>0)||!(sell>0)||sell<=buy)continue;
+
+    const gross=(sell-buy)/buy*100;
+    const net=gross-(fee*2)-(slip*2);
+    rows.push({coin,buyName,buy,sellName,sell,gross,net});
+   }
+  }
+ }
+
+ rows.sort((a,b)=>b.net-a.net);
+ latest=rows;
+
+ const winners=rows.filter(x=>x.net>=threshold);
+ document.getElementById("markets").textContent=markets.size;
+ document.getElementById("opportunities").textContent=winners.length;
+ document.getElementById("best").textContent=(rows[0]?.net||0).toFixed(2)+"%";
+
+ document.getElementById("bestOpportunity").textContent=rows.length?
+  rows[0].coin+" · Buy "+rows[0].buyName+" · Sell "+rows[0].sellName+" · Estimated net "+rows[0].net.toFixed(2)+"%":
+  "No positive spread found.";
+
+ const shown=rows.slice(0,50);
+ document.getElementById("results").innerHTML=shown.length?
+  shown.map(x=>`<tr>
+  <td>${escapeHTML(x.coin)}</td>
+  <td>${escapeHTML(x.buyName)}</td>
+  <td>${formatPrice(x.buy)}</td>
+  <td>${escapeHTML(x.sellName)}</td>
+  <td>${formatPrice(x.sell)}</td>
+  <td class="${x.net>=threshold?'green':'red'}">${x.net.toFixed(2)}%</td>
+  </tr>`).join(""):
+  '<tr><td colspan="6">No matching markets found.</td></tr>';
+
+ document.getElementById("status").textContent=
+  "Last scan: "+new Date().toLocaleTimeString()+" · "+rows.length+" price comparisons · "+winners.length+" above threshold";
+}
+
+function formatPrice(n){
+ return Number(n).toLocaleString("en-US",{maximumSignificantDigits:9});
+}
+function escapeHTML(s){
+ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function toggleScan(){
+ running=!running;
+ document.getElementById("toggle").textContent=running?"PAUSE":"RESUME";
+ if(running){scan();startTimer();}
+ else{clearInterval(timer);timer=null;document.getElementById("status").textContent="Scanner paused.";}
+}
+function startTimer(){
+ clearInterval(timer);
+ timer=setInterval(()=>{if(running)scan();},+document.getElementById("interval").value);
+}
+function changeInterval(){if(running)startTimer();}
+
+scan();
+startTimer();
+</script>
+</body>
+</html>
